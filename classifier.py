@@ -494,6 +494,63 @@ class LocalPatternClassifier:
         return obj
 
 
+@dataclass
+class CriticBundle:
+    """CriticBundle — the paired (critic, analyzer) artifact.
+
+    Single interface `load(path)` owns the 34-vs-30 decision. Callers
+    never re-derive `need_lm`; the bundle matches `stat_dim` to the
+    analyzer's expected dims. This is the deep module for
+    Human-Likeness scoring — one seam, high leverage.
+    """
+
+    critic: LocalPatternClassifier
+    analyzer: "PatternAnalyzer"
+    stat_dim: int
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        analyzer_config: Optional["AnalyzerConfig"] = None,
+        analyzer: Optional["PatternAnalyzer"] = None,
+    ) -> "CriticBundle":
+        """Load a saved critic and its matched analyzer.
+
+        If `analyzer` is given, it is used directly. Otherwise the
+        analyzer's `load_model` is chosen from the artifact's stat_dim:
+        cheap (30) → LM-free, full (34) → with LM. No caller guesses
+        `--fast`.
+        """
+        # Lazy import to avoid circular
+        try:
+            from analyzer import PatternAnalyzer as PA
+        except ImportError:  # pragma: no cover
+            from src.humaize.analyzer import PatternAnalyzer as PA  # type: ignore
+
+        from config import AnalyzerConfig as AC  # local
+
+        blob = joblib.load(path)
+        # Reuse LocalPatternClassifier.load logic but keep blob for stat_dim
+        obj = LocalPatternClassifier.load(path, analyzer=analyzer)
+        if analyzer is not None:
+            ana = analyzer
+        else:
+            cheap_len = len(PA.CHEAP_FEATURE_NAMES)
+            stat_dim = blob.get("stat_dim", 0)
+            need_lm = stat_dim != cheap_len and stat_dim != 0
+            cfg = analyzer_config or AC()
+            ana = PA(config=cfg, load_model=need_lm)
+            obj.analyzer = ana
+        return cls(critic=obj, analyzer=obj.analyzer, stat_dim=obj._stat_dim)
+
+    def human_likeness_score(self, text: str) -> float:
+        return self.critic.human_likeness_score(text)
+
+    def explain(self, text: str, **kw):
+        return self.critic.explain(text, **kw)
+
+
 if __name__ == "__main__":  # smoke test: python classifier.py
     from data_loader import load_paired_dataset, texts_and_labels
 

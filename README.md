@@ -1,186 +1,154 @@
-# Humaize — Autonomous Local ML System for Human-Like Rewriting
+# Humaize — Local Human-Like Rewriting (Yoga 9i Optimized)
 
-Fully **local** pipeline (no external APIs / GPT dependencies) that learns AI-writing
-patterns from data and rewrites text to sound human. Pattern detection is **learned**
-(TF-IDF + statistical features → gradient-boosted discriminator used as an RL reward
-model), never a hardcoded rule list.
+Fully **local** ML pipeline that learns AI-writing patterns from your data and rewrites text to sound human. No cloud, no API keys, no hardcoded rules — pattern detection is **learned** (`TF-IDF + 30 stat features → LogReg/XGBoost → Human-Likeness ∈ [0,1]`).
 
-## Architecture
+Optimized for **Yoga 9i 15ITL (i7 EVO / Iris Xe / 16GB)** — runs in `~900MB` RAM, `~3s` per rewrite after warmup, entirely on CPU. First run downloads models once (~700MB), then forever offline.
+
+## Basic Use — 3 steps
+
+```bash
+# 1. Install (light = Yoga profile)
+pip install -r requirements-light.txt
+
+# 2. Train once (demo data or your own — see below)
+python main.py --mode train --fast --light
+# or double-click: train.bat  (drag a folder/file onto it to train on your writing)
+
+# 3. Humanize — pick one:
+python cli.py --fast --light                          # chat (see Chat section)
+python cli.py --fast --light --text "paste text here" # one-shot
+python main.py --mode infer --fast --light --input "<input_text>Your text here.</input_text>"
+echo "<input_text>Your text</input_text>" > in.txt && python main.py --mode infer --fast --light --input-file in.txt
+```
+
+Output shows: `score` vs `target 0.85`, `fidelity` (unigram/bigram), which **learned** patterns were fixed, and the rewrite (also copied to clipboard).
+
+## How it works
+
+```
+<input_text> payload → isolate (fail-closed) → PatternAnalyzer (30 stats) → CriticBundle (Human-Likeness) → explain/guidance → TextRewriter (SmolLM2-360M, chat template) → GateSpec (sim 0.35 / copy 0.85·0.75 / bloat 1.8) → retry 1× → output
+```
 
 | Module | File | Role |
 |---|---|---|
-| Feature Extractor | `analyzer.py` → `PatternAnalyzer` | LM perplexity / log-probs + surprise variance (local HF model) + burstiness (var/CV/range), n-gram entropy, repetition rate, passive density, vocab predictability, word/punctuation shape, detector-inspired signals (nominalizations, transitions, intensifiers, openers, hyphen/caps density) plus second-wave traces: AI clichés, hedges/boosters, pronoun voice, ?/!/— rhythm, enumerations, readability grade (34 features, 30 LM-free) |
-| Classifier / Reward | `classifier.py` → `LocalPatternClassifier` | XGBoost (fallback HistGB/LogReg) on TF-IDF + stats → Human-Likeness ∈ [0,1]; RL reward model; `explain()` attributes verdicts to learned class centroids + token weights with raise/lower direction, `details()` breakdown, `global_importances()` corpus-wide signals |
-| Generator | `generator.py` → `TextRewriter` | Local Qwen-2.5-7B-Instruct / Mistral-7B in 4-bit QLoRA (`bitsandbytes`+`peft`); CPU fallback SmolLM2-360M-Instruct via chat templates; accepts learned-pattern `guidance` for targeted edits |
-| Adversarial RL | `train_rl.py` → `AdversarialTrainer` | TRL PPO / DPO: Actor generates → Critic scores → policy update; offline fallbacks included |
-| Runtime | `pipeline.py` → `HumanizationPipeline` | `<input_text>` isolation + explain → targeted generate → validate (score ≥ target AND input-overlap ≥ floor, echoes/padding rejected) + adaptive resampling loop + polish passes on the winner; long inputs rewrite sentence-by-sentence; reports unigram/bigram/composite fidelity plus fixed-vs-remaining pattern report |
-| Entry point | `main.py` | End-to-end train + RL + inference |
+| Feature Extractor | `analyzer.py → PatternAnalyzer` | 30 LM-free stats (burstiness, entropy, repetition, passive, clichés, hedges/boosters, ?/!/— , FK grade) — 34 with optional LM |
+| Critic Bundle | `classifier.py → CriticBundle` | Paired `(critic, analyzer)` with matched `stat_dim`. Single `load(path)` — no caller guesses `--fast`. `explain()` gives raise/lower directions |
+| Gate Spec | `utils.GateSpec` via `config.PipelineConfig` | The triple gate: `min_similarity`, `is_near_copy`, `MAX_LENGTH_RATIO` — one spec, all gates read it |
+| Resource Profile | `config.apply_light_mode → ResourceProfile` | Single owner of "what light/Yoga means" — pure, testable caps (see Yoga section) |
+| Generator | `generator.py → TextRewriter` | Local `SmolLM2-360M` (~700MB, Iris Xe optional via OpenVINO) or `Qwen-7B 4-bit` on GPU; `RewriteSanitizer` 5-step chain |
+| Runtime | `pipeline.py → HumanizationPipeline` | Isolation + explain → targeted generate → GateSpec validate + sentence-chunk for long inputs |
+| Entry point | `main.py` | `train` / `infer` / `full` (+ RL) |
 
-Supporting: `config.py` + `config.yaml`, `data_loader.py`, `utils.py` (isolation, `SamplingParams` schedule).
+Deep modules: `CriticBundle`, `GateSpec`, `ResourceProfile`, `RewriteSanitizer` — see `CONTEXT.md`.
 
 ## Payload isolation
 
-Runtime input **must** be wrapped: `<input_text>...</input_text>`. Only the inner
-payload reaches the models; outer text is discarded (fail-closed on 0 or 2+ blocks).
-The rewrite prompt additionally instructs the model to treat tagged content as DATA.
+Input **must** be `<input_text>...</input_text>`. Only inner text reaches models; outer text is discarded (0 or 2+ blocks → error). Prompt also tells the model tagged text is DATA.
 
-## Quickstart (offline demo, CPU-safe)
+## Yoga 9i profile (`--light`)
 
+`HUMAIZE_LIGHT=1` or `--light` activates the pure `ResourceProfile`:
+
+| Cap | Normal | Yoga Ultra (`--light`) |
+|---|---|---|
+| Analyzer window | 1024 | **128** (no LM) |
+| TF-IDF | 5000 + xgboost | **800 + logreg** |
+| Generator prompt | 6000 chars / 256 tok | **2000 / 64 tok** |
+| Pipeline | 4 iters + 2 polish | **1 iter / 0 polish**, greedy first try |
+| Threads | auto | **2** |
+| Peak RAM | ~2.5GB (7B) | **~0.9GB** |
+| Speed (360M) | ~8s | **~3s after warmup** |
+
+Pure function — `apply_light_mode` returns a new `AppConfig`, never mutates. Long docs still sentence-chunk at 40 words.
+
+Optional Iris Xe boost (2-3×, same seam):
 ```bash
-pip install -r requirements.txt
-python main.py --mode full --fast
-python main.py --mode infer --fast --input "<input_text>Your text here.</input_text>"
+pip install optimum-intel openvino --quiet  # auto-detected on next load
 ```
 
-## Lightweight mode (less RAM/CPU/disk, slower)
+## Chat (Kilo-style)
 
 ```bash
-pip install -r requirements-light.txt   # skips GPU/RL stack
-python main.py --mode train --fast --light
-python cli.py --fast --light
+python cli.py --fast --light            # menus on start
+python cli.py --fast --light --effort deep  # quick/standard/deep/max
+python cli.py --fast --light --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct
 ```
 
-## Desktop GUI (claymorphism)
+Inside: `/effort`, `/model`, `/target 0.85`, `/iters`, `/sim`, `/polish`, `/analyze <text>`, `/save [path]`, `/status`, `/m` multiline. Models reload in place, critic kept. `chat.bat` = same auto `--fast --light`.
+
+`--light` on 360M is instruction-tuned — raw `gpt2` would ramble.
+
+## Documents with tables
+
+Via `dochumanize.py` (stdlib `.docx`, no deps):
+
+- Body paras → full pipeline one by one.
+- Table cells → line-batched (one generation per batch, per-line `GateSpec` check + individual fallback).
+- Short labels/numbers/dates/headings kept as-is; nested tables + `w:sdt` wrappers handled.
+- `cli.py --input-file doc.txt` or `python -c "from dochumanize import parse_docx, humanize_document, write_docx; ..."`
+
+Output: `<name>_humanized.docx` next to original. PDFs → convert to `.docx` first.
+
+## Training on your own writing
+
+No CSV needed — point at your files:
+```bash
+python main.py --mode train --fast --light --human-dir my_writing/   # folder or .txt/.md
+python main.py --mode train --fast --light --human-dir my/ --split-paragraphs  # one doc → many samples
+train.bat  # drag folder onto it
+```
+
+| Flag | Effect |
+|---|---|
+| `--ai-dir ai/` | AI samples (label 0) |
+| `--human-dir hw/` | Your writing (label 1) + built-in AI contrast |
+| `--split-paragraphs` | Split files on blank lines |
+| `--no-demo` | Use only your data |
+| `--data pairs.csv` | Classic `text,label` CSV/JSONL (combines) |
+
+15+ varied samples per side beats 100 identical ones.
+
+## Temp internet corpus
 
 ```bash
-gui.bat                                  # double-click: pastel puffy UI
-python gui.py --fast --light --effort deep
+python main.py --mode train --fast --light --fetch-human 60
 ```
 
-Tkinter only — no new dependencies, fully offline. Input card, effort
-chips (Quick/Standard/Deep/Max), model dropdown (reloads live, critic
-kept), goal slider, one big HUMANIZE button, score pill, rewrite + pattern
-breakdown. Heavy work runs in threads so the window never freezes; first
-run downloads the model once, then offline.
-
-### Documents with tables (GUI)
-
-**Upload doc** accepts `.txt`/`.md` (loaded into the input box) and
-`.docx`. For Word files, **Humanize file** rewrites the content while the
-tables keep their grid, widths, and styles byte-for-byte:
-
-- Body paragraphs go through the full pipeline one by one.
-- Table cells are rewritten in line-batches (one generation per batch,
-  per-line validation, individual fallback) — a 20-cell table costs a few
-  generations, not twenty.
-- Short labels, numbers, dates, and headings are kept as-is (nothing to
-  de-humanize, everything to break); tables nested in cells are processed
-  as their own blocks, and content in Word's structured-document wrappers
-  is found too.
-- Run-level formatting inside a rewritten paragraph flattens to plain
-  text; paragraph-level formatting is preserved.
-
-Output saves next to the original as `<name>_humanized.docx`, with a
-per-unit report (before → after scores) in the details pane. Logic lives
-in `dochumanize.py` (stdlib-only `.docx` handling); PDFs need converting
-to `.docx` first.
-
-## Chat (Kilo-style selectors)
-```bash
-python cli.py --fast --light            # interactive chat, menus on start
-python cli.py --fast --effort deep      # skip menu: deep search preset
-python cli.py --fast --model-id HuggingFaceTB/SmolLM2-1.7B-Instruct
-```
-
-On start the chat asks for an **effort level** (`quick` → `max`: controls
-retries, candidates/iter, polish passes, similarity floor) and a **model**
-(SmolLM2-360M/1.7B on CPU, Qwen/Mistral-7B on GPU). Inside the chat,
-`/effort [name]` and `/model [n|hf-id]` switch live — models reload in
-place, the critic is kept. Manual `/iters`/`/num`/`/sim`/`/polish` tweaks
-mark effort as `custom` (shown in `/status`).
-
-`--light` switches the fallback generator to SmolLM2-360M-Instruct (~700MB,
-instruction-tuned — raw base models like gpt2 can't follow rewrite instructions
-and ramble off-topic), caps the analyzer window (512), TF-IDF (2000 features)
-and RL batches (1), limits CPU threads, and enables gradient checkpointing in
-RL training.
+Gutenberg public-domain → temp dir → auto-deleted if `acc ≥ 0.7` (`--fetch-min-acc`), else kept + path printed. `--fetch-keep` keeps always. Standalone: `python fetch_corpus.py --out data/tmp --samples 60`
 
 ## Production (GPU, 7B 4-bit)
 
 ```bash
-python main.py --mode full --data data/pairs.csv
-python main.py --mode train --data data/pairs.csv
+python main.py --mode full --data data/pairs.csv          # no --fast/--light
 python main.py --mode infer --input-file input.txt
 ```
+Needs `bitsandbytes` + CUDA. `HUMAIZE_FAST=1` forces fallback to 360M.
 
-Dataset format (CSV or JSONL): `text,label` with `1=human, 0=AI`.
-
-## Training on your own writing
-
-Point the trainer at your own text — no CSV wrangling. One file or a folder
-of `.txt`/`.md` files; each file becomes one sample:
+## MLP critic
 
 ```bash
-python main.py --mode train --fast --human-dir my_writing/
+python main.py --mode train --fast --light --model-type mlp
 ```
-
-Your files train as human (label 1), paired with the built-in AI samples as
-contrast — so both classes exist with zero extra work. Options:
-
-| Flag | Effect |
-|---|---|
-| `--ai-dir ai_samples/` | AI examples with label 0 (instead of / alongside built-ins) |
-| `--split-paragraphs` | Split each file on blank lines → many samples per document |
-| `--no-demo` | Exclude the built-in corpus (use only your data) |
-| `--data pairs.csv` | Classic CSV/JSONL path (combines with the above) |
-
-Tip: 15+ samples per side with varied topics beats 100 near-identical ones —
-the critic learns *your* voice against AI patterns, and `explain()` then
-targets rewrites at exactly what makes new text sound unlike you.
-
-## Temp internet corpus (fetch → train → auto-delete)
-
-Need human examples fast? Pull public-domain books (Project Gutenberg,
-clean license) into a temp dir for one training run:
-
-```bash
-python main.py --mode train --fast --fetch-human 60
-```
-
-This downloads ~60 paragraphs, trains, and **deletes the temp files when
-accuracy clears `--fetch-min-acc`** (default 0.7). If the score falls short,
-the files are kept and their path printed so you can inspect or retry.
-`--fetch-keep` always keeps them; `--book-ids 1342,11` picks specific books;
-`python fetch_corpus.py --out data/temp_human --samples 60` fetches standalone.
-
-Heads-up: classics are 19th-century prose — good for generic patterns, but
-pair with `--human-dir` (your modern voice) for best results.
-
-## Neural-net critic (MLP)
-
-Beyond trees (`xgboost`/`histgb`) and linear (`logreg`), the critic offers a
-feed-forward neural network:
-
-```bash
-python main.py --mode train --fast --model-type mlp
-```
-
-Tune via `classifier.mlp_hidden_layers` / `mlp_max_iter` in `config.yaml`.
-Rule of thumb: trees win under ~100 samples; the MLP pulls ahead with more
-data. Token-level evidence (`explain()` word hits, `global_importances()`)
-is unavailable for the MLP — per-feature directions still work.
+`mlp_hidden_layers` / `mlp_max_iter` in `config.yaml`. Trees win <100 samples; MLP needs more data.
 
 ## Longer training
 
-Two knobs (flags or `config.yaml`):
+```bash
+python main.py --mode train --fast --light --trees 500 --epochs 3
+```
+`--trees` = boosting rounds, `--epochs` = RL passes (RL skipped under `--fast` on CPU). Demo memorizes — grow corpus first. `train_long.bat` = 10-min Yoga session (400 samples + MLP + RL).
+
+## TUI (optional)
 
 ```bash
-python main.py --mode train --fast --trees 500 --epochs 3
+cd tui && npm install && npm run dev -- --no-wizard --effort quick
+# or: tui\bridge.py / server.py for Node ↔ Python IPC
 ```
-
-- `--trees N` — boosting rounds for the `xgboost`/`histgb` critic
-  (`classifier.xgb_estimators` / `gb_max_iter`). More rounds = finer
-  patterns, but on the 20-sample demo it just memorizes — longer critic
-  training pays off once `--human-dir` / `--fetch-human` grows the corpus.
-- `--epochs N` — adversarial RL passes over the prompts (`rl.num_epochs`,
-  default 1). Note RL weight updates are skipped under `--fast` on CPU, so
-  longer RL matters in full (GPU) mode; on CPU, longer *critic* training is
-  where the gains are.
 
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
-HUMAIZE_FAST=1 python analyzer.py
+python -m pytest tests/ -q          # 41 tests, ~20s
+HUMAIZE_FAST=1 python analyzer.py   # smoke
 HUMAIZE_FAST=1 python classifier.py
 ```

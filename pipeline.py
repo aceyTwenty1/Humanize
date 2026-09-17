@@ -217,6 +217,12 @@ class HumanizationPipeline:
             logger.info("HumanizationPipeline: no pattern explanation (%s)", exc)
 
         base_params = SamplingParams()
+        # Yoga Ultra: greedy first try (0.0 temp) is 30% faster and often
+        # passes on short inputs; fall back to schedule on retry.
+        from utils import is_light
+
+        if is_light() and iters == 1:
+            base_params = SamplingParams(**SamplingParams.YOGA_GREEDY, max_new_tokens=64)
         scored: list[ScoredCandidate] = []
         best: Optional[ScoredCandidate] = None
         copies_rejected = 0

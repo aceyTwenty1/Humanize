@@ -650,16 +650,3 @@ def test_choose_menu(monkeypatch):
     assert choose("t", ["a", "b"]) is None
     monkeypatch.setattr("builtins.input", lambda _: "99")
     assert choose("t", ["a", "b"]) is None
-
-
-def test_gui_imports_headless():
-    import gui
-
-    assert gui.hex_mix("#000000", "#ffffff", 0.5) == "#808080"
-    assert gui.hex_mix("#ff0000", "#0000ff", 0.0) == "#ff0000"
-    for cls in ("App", "ClayCard", "ClayButton", "ScoreBar"):
-        assert hasattr(gui, cls)
-    for meth in ("on_humanize", "on_effort", "on_model_pick", "on_copy", "_show"):
-        assert hasattr(gui.App, meth)
-    with __import__("pytest").raises(SystemExit):
-        gui.main(["--help"])

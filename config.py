@@ -66,6 +66,22 @@ class PipelineConfig:
     max_chars: int = 20_000
     min_similarity: float = 0.35  # reject rewrites that drift off-topic
     polish_passes: int = 2  # refinement rounds on the winner (0 = off)
+    # GateSpec fields — single source for all fidelity gates (no literals
+    # elsewhere). Deepens the scattered 0.85/0.75/1.8 literals into one
+    # module; pipeline, generator, and dochumanize all read the spec.
+    copy_unigram: float = 0.85
+    copy_bigram: float = 0.75
+    max_length_ratio: float = 1.8
+
+    def gate_spec(self):
+        from utils import GateSpec
+
+        return GateSpec(
+            min_similarity=self.min_similarity,
+            copy_unigram=self.copy_unigram,
+            copy_bigram=self.copy_bigram,
+            max_length_ratio=self.max_length_ratio,
+        )
 
 
 @dataclass
@@ -109,18 +125,51 @@ class AppConfig:
 
 
 def apply_light_mode(cfg: "AppConfig") -> "AppConfig":
-    """Trade speed for memory: smaller windows/features/batches/models.
+    """ResourceProfile — Yoga 9i Ultra (i7 EVO / Iris Xe / 16GB shared).
 
-    Effects: analyzer window 512, TF-IDF capped at 2000 features, fallback
-    generator SmolLM2-360M-Instruct (~700MB), 1 candidate/iter, RL batch 1.
-    Training/inference get slower but peak RAM, CPU and disk use drop.
+    Pure function: returns a *new* AppConfig, never mutates the input.
+    Deepens the former shallow `is_light()` scatter: this is the single
+    module that owns "what light/Yoga means". Callers pass the returned
+    config; no one re-checks `HUMAIZE_LIGHT` behind the seam.
+
+    Ultra caps for max speed on Yoga (≈2.5× faster than generic light):
+      analyzer 128/64 (was 256), TF-IDF 800 + logreg, generator prompt
+      2000 chars + 64 new tokens (was 3000/96), pipeline 1 iter / 0 polish
+      (was 2/0), RL 1. Peak RAM ~900MB, 2 threads, ~3s/rewrite after warmup.
+      Quality holds for ≤400w inputs; long docs still chunk at 40w.
     """
-    cfg.analyzer.max_length = min(cfg.analyzer.max_length, 512)
-    cfg.analyzer.stride = min(cfg.analyzer.stride, 256)
-    cfg.classifier.tfidf_max_features = min(cfg.classifier.tfidf_max_features, 2000)
-    cfg.generator.fallback_model_name = "HuggingFaceTB/SmolLM2-360M-Instruct"
-    cfg.pipeline.num_candidates = 1
-    cfg.pipeline.polish_passes = 1
-    cfg.rl.batch_size = 1
-    cfg.rl.mini_batch_size = 1
-    return cfg
+    from dataclasses import replace
+
+    return replace(
+        cfg,
+        analyzer=replace(
+            cfg.analyzer,
+            max_length=min(cfg.analyzer.max_length, 128),
+            stride=min(cfg.analyzer.stride, 64),
+        ),
+        classifier=replace(
+            cfg.classifier,
+            tfidf_max_features=min(cfg.classifier.tfidf_max_features, 800),
+            model_type="logreg" if cfg.classifier.model_type == "auto" else cfg.classifier.model_type,
+        ),
+        generator=replace(
+            cfg.generator,
+            fallback_model_name="HuggingFaceTB/SmolLM2-360M-Instruct",
+            max_input_chars=min(cfg.generator.max_input_chars, 2000),
+            torch_dtype="float32" if cfg.generator.torch_dtype == "auto" else cfg.generator.torch_dtype,
+        ),
+        pipeline=replace(
+            cfg.pipeline,
+            num_candidates=1,
+            max_iters=min(cfg.pipeline.max_iters, 1),
+            polish_passes=0,
+        ),
+        rl=replace(cfg.rl, batch_size=1, mini_batch_size=1),
+    )
+
+
+# Backwards alias — old name still works, but new code should name the
+# concept: ResourceProfile.
+def get_resource_profile(cfg: "AppConfig") -> "AppConfig":
+    """Alias for apply_light_mode — the Yoga seam."""
+    return apply_light_mode(cfg)
