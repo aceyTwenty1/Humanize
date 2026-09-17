@@ -1,0 +1,22 @@
+# Humaize — local-only runtime + pinned core deps.
+# Install:  pip install -r requirements.txt
+# Notes:
+#  - bitsandbytes/trl/peft need a CUDA GPU for 4-bit QLoRA; on CPU-only
+#    machines the generator falls back to a small local model automatically.
+#  - xgboost is optional (auto-fallback to sklearn HistGradientBoosting).
+
+torch>=2.2
+transformers>=4.40
+tokenizers>=0.19
+accelerate>=0.29
+peft>=0.10
+trl>=0.8
+bitsandbytes>=0.43; platform_system != "Windows"
+scikit-learn>=1.4
+scipy>=1.12
+numpy>=2.0,<2.8
+joblib>=1.4
+pyyaml>=6.0
+tqdm>=4.66
+datasets>=2.18
+xgboost>=2.0

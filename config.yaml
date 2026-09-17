@@ -1,0 +1,47 @@
+analyzer:
+  model_name: "gpt2"
+  device: null
+  max_length: 1024
+  stride: 512
+classifier:
+  tfidf_max_features: 5000
+  tfidf_ngram_max: 2
+  use_stats_features: true
+  model_type: "auto"
+  xgb_estimators: 300
+  gb_max_iter: 300
+  mlp_hidden_layers: [128, 64]
+  mlp_max_iter: 500
+  test_size: 0.2
+  random_state: 42
+  save_path: "artifacts/classifier.joblib"
+generator:
+  model_name: "Qwen/Qwen2.5-7B-Instruct"
+  fallback_model_name: "HuggingFaceTB/SmolLM2-360M-Instruct"
+  load_in_4bit: true
+  device_map: "auto"
+  torch_dtype: "auto"
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  max_input_chars: 6000
+rl:
+  algo: "ppo"
+  output_dir: "artifacts/rl_adapter"
+  num_epochs: 1
+  batch_size: 4
+  mini_batch_size: 1
+  learning_rate: 0.000014
+  kl_coef: 0.2
+  target_kl: 6.0
+  seed: 42
+pipeline:
+  target_score: 0.85
+  max_iters: 4
+  num_candidates: 2
+  max_chars: 20000
+  min_similarity: 0.35
+  polish_passes: 2
+seed: 42
+artifacts_dir: "artifacts"

@@ -1,0 +1,14 @@
+# Humaize — lightweight install (CPU, no GPU/RL stack).
+# Install:  pip install -r requirements-light.txt
+# Covers: analyzer stats + classifier training + fallback generation + pipeline.
+# For 4-bit QLoRA + TRL on GPU, use requirements.txt instead.
+
+torch>=2.2
+transformers>=4.40
+tokenizers>=0.19
+scikit-learn>=1.4
+scipy>=1.12
+numpy>=2.0,<2.8
+joblib>=1.4
+pyyaml>=6.0
+tqdm>=4.66
